@@ -242,16 +242,20 @@ def generate_rag_answer(query: str, retrieved_chunks: list[dict]) -> tuple[str, 
                 f"ANSWER:"
             )
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 400}
-            }
-            resp = requests.post(url, json=payload, timeout=6)
-            if resp.status_code == 200:
-                data = resp.json()
-                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                return text, sources, suggested_actions
+            for model_name in ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-3.8-flash']:
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+                    payload = {
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 400}
+                    }
+                    resp = requests.post(url, json=payload, timeout=5)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        return text, sources, suggested_actions
+                except Exception:
+                    continue
         except Exception as e:
             logger.warning(f"Gemini generation fallback triggered: {e}")
 

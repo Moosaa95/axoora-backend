@@ -30,8 +30,15 @@ ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(',') if host.s
 if DEBUG and '*' not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append('*')
 
-DATA_DIR = Path(os.getenv('DATA_DIR', str(BASE_DIR)))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR_ENV = os.getenv('DATA_DIR')
+if DATA_DIR_ENV:
+    try:
+        DATA_DIR = Path(DATA_DIR_ENV)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        DATA_DIR = BASE_DIR
+else:
+    DATA_DIR = BASE_DIR
 
 
 
