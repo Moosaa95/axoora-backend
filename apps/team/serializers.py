@@ -39,8 +39,13 @@ class TeamMemberSerializer(serializers.Serializer):
     role = RoleSerializer(read_only=True)
     custom_permissions = serializers.ListField(child=serializers.CharField(), read_only=True)
     effective_permissions = serializers.ListField(child=serializers.CharField(), source='get_effective_permissions', read_only=True)
+    has_accepted = serializers.SerializerMethodField()
+    last_login = serializers.DateTimeField(source='user.last_login', read_only=True, allow_null=True)
     created_at = serializers.DateTimeField(read_only=True)
     updated_at = serializers.DateTimeField(read_only=True)
+
+    def get_has_accepted(self, obj) -> bool:
+        return obj.user.last_login is not None
 
 
 class TeamMemberCreateSerializer(serializers.Serializer):

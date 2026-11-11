@@ -241,7 +241,9 @@ class TeamMember(BaseModel):
             username = f"{base_username}{counter}"
             counter += 1
 
-        raw_password = password or 'AxooraPass2026!'
+        from .email_service import generate_secure_password
+
+        raw_password = password.strip() if password and password.strip() else generate_secure_password()
         user = User.objects.create_user(
             username=username,
             email=clean_email,
@@ -260,10 +262,24 @@ class TeamMember(BaseModel):
             job_title=job_title.strip(),
             phone_number=phone_number.strip(),
             department=department,
-            status=MemberStatus.ACTIVE,
+            status=MemberStatus.INVITED,
             custom_permissions=perms,
         )
+        member._initial_password = raw_password
         return member
+
+    @classmethod
+    def reset_password(cls, member_id, new_password=None):
+        """Admin resets a team member's password to a secure generated password."""
+        from .email_service import generate_secure_password
+
+        member = cls.get_by_id(member_id)
+        if not member:
+            return None, None
+        pwd = new_password.strip() if new_password and new_password.strip() else generate_secure_password()
+        member.user.set_password(pwd)
+        member.user.save(update_fields=['password'])
+        return member, pwd
 
     @classmethod
     def update_member(cls, member_id, **fields):

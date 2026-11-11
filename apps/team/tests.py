@@ -173,3 +173,63 @@ class TeamApiTests(TestCase):
         with self.assertNumQueries(2):
             members = list(TeamMember.get_all())
             _ = TeamMemberSerializer(members, many=True).data
+
+    def test_create_member_auto_generates_password_and_dispatches_email(self):
+        from django.core import mail
+
+        url = reverse('team-members-list')
+        payload = {
+            'full_name': 'Tunde Balogun',
+            'email': 'tunde@axoora.test',
+            'role_id': str(self.editor_role.id),
+            'department': 'Operations',
+            'job_title': 'POS Logistics Lead',
+            # Leaving password empty to trigger auto-generation
+        }
+        res = self.client.post(url, payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(res.data['success'])
+        self.assertIn('generated_password', res.data)
+        gen_pass = res.data['generated_password']
+        self.assertGreaterEqual(len(gen_pass), 12)
+
+        # Check outbox for invitation email
+        self.assertEqual(len(mail.outbox), 1)
+        sent_email = mail.outbox[0]
+        self.assertEqual(sent_email.to, ['tunde@axoora.test'])
+        self.assertIn('Welcome to Axoora Admin Portal', sent_email.subject)
+        self.assertIn(gen_pass, sent_email.body)
+
+    def test_reset_and_resend_member_credentials(self):
+        from django.core import mail
+        mail.outbox.clear()
+
+        # Create member
+        member = TeamMember.create_member(
+            email='amina@axoora.test',
+            full_name='Amina Bello',
+            role_id=self.editor_role.id,
+        )
+        self.assertFalse(member.user.last_login)
+        self.assertEqual(member.status, MemberStatus.INVITED)
+
+        # Test Reset Password Endpoint
+        reset_url = reverse('team-member-reset-password', kwargs={'member_id': member.id})
+        res_reset = self.client.post(reset_url, {}, format='json')
+        self.assertEqual(res_reset.status_code, status.HTTP_200_OK)
+        new_pwd = res_reset.data['new_password']
+        self.assertGreaterEqual(len(new_pwd), 12)
+
+        # Verify password in DB was updated
+        member.user.refresh_from_db()
+        self.assertTrue(member.user.check_password(new_pwd))
+        self.assertIn('Your Axoora Admin Password Has Been Reset', mail.outbox[-1].subject)
+
+        # Test Resend Invite Endpoint
+        resend_url = reverse('team-member-resend-invite', kwargs={'member_id': member.id})
+        res_resend = self.client.post(resend_url, {}, format='json')
+        self.assertEqual(res_resend.status_code, status.HTTP_200_OK)
+        resend_pwd = res_resend.data['temporary_password']
+        member.user.refresh_from_db()
+        self.assertTrue(member.user.check_password(resend_pwd))
+        self.assertIn('Welcome to Axoora Admin Portal', mail.outbox[-1].subject)

@@ -10,6 +10,7 @@ from rest_framework import permissions, status
 from ..common.pagination import paginate_queryset
 from .models import Role, TeamMember
 from .enums import SYSTEM_PERMISSIONS, MemberStatus, Department
+from .email_service import send_team_invite_email, send_password_reset_email
 from .serializers import (
     RoleSerializer,
     RoleCreateUpdateSerializer,
@@ -89,6 +90,11 @@ class AuthLoginView(APIView):
 
         # Ensure TeamMember record exists
         profile = get_or_create_team_profile(user)
+
+        # If user was in invited state, accept and activate on first login
+        if profile.status == MemberStatus.INVITED:
+            profile.status = MemberStatus.ACTIVE
+            profile.save(update_fields=['status', 'updated_at'])
 
         return Response({
             "success": True,
@@ -321,11 +327,18 @@ class TeamMemberListView(APIView):
             custom_permissions=data.get('custom_permissions'),
         )
 
+        initial_password = getattr(member, '_initial_password', None)
+        email_sent = False
+        if initial_password:
+            email_sent = send_team_invite_email(member, initial_password, request=request)
+
         return Response(
             {
                 "success": True,
-                "message": f"Team member '{member.full_name}' created successfully.",
+                "message": f"Team member '{member.full_name}' invited successfully. {'Invitation email dispatched.' if email_sent else 'Credentials generated.'}",
                 "data": TeamMemberSerializer(member).data,
+                "generated_password": initial_password,
+                "email_sent": email_sent,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -364,3 +377,51 @@ class TeamMemberDetailView(APIView):
         if not deleted:
             return Response({"error": "Team member not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response({"success": True, "message": "Team member removed successfully."})
+
+
+class TeamMemberResetPasswordView(APIView):
+    """
+    Admin resets a team member's password, generating a new secure temporary password
+    and dispatching an email notification.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, member_id):
+        new_pwd_input = request.data.get('new_password')
+        member, new_pwd = TeamMember.reset_password(member_id, new_password=new_pwd_input)
+        if not member:
+            return Response({"error": "Team member not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        email_sent = send_password_reset_email(member, new_pwd, request=request)
+        return Response({
+            "success": True,
+            "message": f"Password for '{member.full_name}' reset successfully. {'Notification dispatched to email.' if email_sent else 'Ready for copy.'}",
+            "new_password": new_pwd,
+            "email_sent": email_sent,
+        })
+
+
+class TeamMemberResendInviteView(APIView):
+    """
+    Admin resends the invitation email with newly generated temporary credentials
+    if the team member hasn't accepted yet.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, member_id):
+        member, new_pwd = TeamMember.reset_password(member_id)
+        if not member:
+            return Response({"error": "Team member not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Ensure status reflects invited if not yet logged in
+        if not member.user.last_login:
+            member.status = MemberStatus.INVITED
+            member.save(update_fields=['status', 'updated_at'])
+
+        email_sent = send_team_invite_email(member, new_pwd, request=request)
+        return Response({
+            "success": True,
+            "message": f"Invitation email resent to {member.email}.",
+            "temporary_password": new_pwd,
+            "email_sent": email_sent,
+        })

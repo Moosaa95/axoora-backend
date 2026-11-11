@@ -10,6 +10,8 @@ from .views import (
     RoleDetailView,
     TeamMemberListView,
     TeamMemberDetailView,
+    TeamMemberResetPasswordView,
+    TeamMemberResendInviteView,
 )
 
 urlpatterns = [
@@ -30,4 +32,6 @@ urlpatterns = [
     # Team Members Directory
     path('members/', TeamMemberListView.as_view(), name='team-members-list'),
     path('members/<uuid:member_id>/', TeamMemberDetailView.as_view(), name='team-members-detail'),
+    path('members/<uuid:member_id>/reset-password/', TeamMemberResetPasswordView.as_view(), name='team-member-reset-password'),
+    path('members/<uuid:member_id>/resend-invite/', TeamMemberResendInviteView.as_view(), name='team-member-resend-invite'),
 ]
