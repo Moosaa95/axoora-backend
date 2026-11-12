@@ -8,6 +8,7 @@ class ChatMessageSerializer(serializers.Serializer):
     """
     id = serializers.UUIDField(read_only=True)
     sender = serializers.ChoiceField(choices=MessageSender.choices)
+    sender_name = serializers.CharField(required=False, allow_blank=True, default='')
     text = serializers.CharField()
     time = serializers.SerializerMethodField()
     suggested_actions = serializers.ListField(child=serializers.DictField(), required=False, default=list)
@@ -29,12 +30,22 @@ class ChatSessionSerializer(serializers.Serializer):
     customer_phone = serializers.CharField(allow_blank=True, default='')
     customer_email = serializers.EmailField(allow_blank=True, default='')
     status = serializers.ChoiceField(choices=ChatStatus.choices)
+    priority = serializers.CharField(default='normal')
     issue_summary = serializers.CharField(allow_blank=True, default='')
     escalation_reason = serializers.CharField(allow_blank=True, default='')
     escalated_at = serializers.DateTimeField(allow_null=True)
+    resolved_at = serializers.DateTimeField(allow_null=True)
+    resolved_by_name = serializers.CharField(allow_blank=True, default='')
+    resolution_notes = serializers.CharField(allow_blank=True, default='')
+    assigned_agent_name = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(read_only=True)
     updated_at = serializers.DateTimeField(read_only=True)
     messages = ChatMessageSerializer(many=True, read_only=True)
+
+    def get_assigned_agent_name(self, obj):
+        if getattr(obj, 'assigned_agent', None):
+            return obj.assigned_agent.get_full_name() or obj.assigned_agent.username
+        return ''
 
 
 class ChatSendMessageInputSerializer(serializers.Serializer):

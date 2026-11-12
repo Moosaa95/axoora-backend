@@ -34,7 +34,7 @@ class JournalArticleSerializer(serializers.Serializer):
 
 class JournalArticleCreateUpdateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
-    category = serializers.ChoiceField(choices=ArticleCategory.choices, default=ArticleCategory.ENGINEERING)
+    category = serializers.CharField(max_length=50, required=False, default='Engineering')
     summary = serializers.CharField()
     content = serializers.CharField(required=False, allow_blank=True, default='')
     read_time = serializers.CharField(max_length=50, required=False, default='4 min read')
@@ -49,9 +49,19 @@ class FaqItemSerializer(serializers.Serializer):
     id = serializers.UUIDField(read_only=True)
     question = serializers.CharField(max_length=300)
     answer = serializers.CharField()
-    category = serializers.ChoiceField(choices=FaqCategory.choices)
+    category = serializers.CharField(max_length=50)
     order = serializers.IntegerField()
     is_active = serializers.BooleanField()
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+
+
+class FaqItemCreateUpdateSerializer(serializers.Serializer):
+    question = serializers.CharField(max_length=300, required=False)
+    answer = serializers.CharField(required=False)
+    category = serializers.CharField(max_length=50, required=False, default='General')
+    order = serializers.IntegerField(required=False, default=0)
+    is_active = serializers.BooleanField(required=False, default=True)
 
 
 class MerchantStorySerializer(serializers.Serializer):

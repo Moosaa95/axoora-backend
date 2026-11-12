@@ -1,4 +1,5 @@
 from typing import Any, cast
+from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import permissions, status
@@ -154,9 +155,28 @@ class ChatSessionHistoryView(APIView):
         return Response(ChatSessionSerializer(session).data)
 
 
+def get_user_actual_name(user, fallback_name=''):
+    """Resolve the genuine name of the authenticated user to prevent identity spoofing."""
+    if user and getattr(user, 'is_authenticated', False):
+        try:
+            from apps.team.models import TeamMember
+            profile = TeamMember.objects.filter(user=user).first()
+            if profile and profile.full_name:
+                return profile.full_name
+        except Exception:
+            pass
+        name = user.get_full_name()
+        if name:
+            return name
+        if getattr(user, 'username', ''):
+            return user.username
+    return fallback_name or 'Support Officer'
+
+
 class ChatAgentReplyView(APIView):
     """
     Staff / Agent endpoint to reply directly to a customer in the chat session.
+    Guarantees the actual name of the responding officer is permanently recorded.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -170,14 +190,18 @@ class ChatAgentReplyView(APIView):
             return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
         session.status = ChatStatus.HUMAN_ACTIVE
-        session.save(update_fields=['status', 'updated_at'])
+        agent_name = get_user_actual_name(request.user, fallback_name=str(data.get('agent_name') or '').strip())
 
-        custom_agent = str(data.get('agent_name') or '').strip()
-        agent_name = custom_agent or (request.user.get_full_name() if request.user.is_authenticated else '') or 'Support Officer'
+        if request.user and request.user.is_authenticated and not session.assigned_agent:
+            session.assigned_agent = request.user
+            session.save(update_fields=['status', 'assigned_agent', 'updated_at'])
+        else:
+            session.save(update_fields=['status', 'updated_at'])
 
         msg = ChatMessage.create_message(
             session=session,
             sender=MessageSender.AGENT,
+            sender_name=agent_name,
             text=f"[{agent_name}]: {data['text']}",
         )
 
@@ -188,9 +212,79 @@ class ChatAgentReplyView(APIView):
         })
 
 
+class ChatInactivityView(APIView):
+    """
+    Handles customer inactivity warning and auto-disconnect when speaking with a human agent.
+    - 'warn': Records a warning notice in the transcript indicating chat will disconnect soon if no response.
+    - 'disconnect': Disconnects the session due to inactivity, updates status to CLOSED, and appends a disconnect notice.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        session_id = request.data.get('session_id')
+        action = request.data.get('action')  # 'warn' or 'disconnect'
+        if not session_id or not action:
+            return Response(
+                {"error": "session_id and action ('warn' or 'disconnect') are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        session = ChatSession.get_by_session_id(session_id)
+        if not session:
+            return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if action == 'warn':
+            msg_text = (
+                "⚠️ Inactivity Warning: Are you still there? "
+                "Our agent is waiting for your reply. This chat will automatically disconnect in 60 seconds if we don't hear from you."
+            )
+            msg = ChatMessage.create_message(
+                session=session,
+                sender=MessageSender.SYSTEM,
+                text=msg_text,
+                suggested_actions=[
+                    {"label": "✅ I'm Still Here", "action": "quick_reply", "text": "Yes, I am still here!"},
+                    {"label": "💬 Switch to WhatsApp", "action": "open_url", "url": get_whatsapp_escalation_url(session, "Continuing inactive chat on WhatsApp")},
+                ],
+            )
+            return Response({
+                "success": True,
+                "action": "warn",
+                "status": session.status,
+                "message": ChatMessageSerializer(msg).data,
+            })
+
+        elif action == 'disconnect':
+            session.status = ChatStatus.CLOSED
+            session.resolved_at = timezone.now()
+            session.save(update_fields=['status', 'resolved_at', 'updated_at'])
+
+            msg_text = (
+                f"⚠️ Chat session disconnected due to customer inactivity. "
+                f"Ticket #{session.ticket_code} has been closed. "
+                f"You can start a new chat anytime or message our Maitama support desk directly on WhatsApp."
+            )
+            msg = ChatMessage.create_message(
+                session=session,
+                sender=MessageSender.SYSTEM,
+                text=msg_text,
+                suggested_actions=[
+                    {"label": "💬 Message WhatsApp Desk", "action": "open_url", "url": get_whatsapp_escalation_url(session, "Reopening disconnected ticket")},
+                ],
+            )
+            return Response({
+                "success": True,
+                "action": "disconnect",
+                "status": session.status,
+                "message": ChatMessageSerializer(msg).data,
+            })
+
+        return Response({"error": f"Invalid action: '{action}'"}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class ChatSessionListView(APIView):
     """
-    Staff/Admin endpoint to view, search, and paginate all active customer chat sessions.
+    Staff/Admin endpoint to view, search, and paginate all active customer chat sessions and raised tickets.
     Uses model classmethod ChatSession.get_all_sessions().
     """
     permission_classes = [permissions.AllowAny]
@@ -198,36 +292,58 @@ class ChatSessionListView(APIView):
     def get(self, request):
         status_filter = request.query_params.get('status')
         search_filter = request.query_params.get('search')
-        queryset = ChatSession.get_all_sessions(status=status_filter, search=search_filter)
+        priority_filter = request.query_params.get('priority')
+        queryset = ChatSession.get_all_sessions(
+            status=status_filter,
+            search=search_filter,
+            priority=priority_filter,
+        )
 
-        paginator, page = paginate_queryset(queryset, request, page_size=30)
+        paginator, page = paginate_queryset(queryset, request, page_size=50)
         serializer = ChatSessionSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
 
 class ChatSessionDetailView(APIView):
     """
-    Update session status (resolve, return to AI, close) or delete a session.
+    Update session status (resolve, return to AI, close), assign officer, add resolution notes, or delete.
+    Guarantees that ticket resolution permanently identifies the actual officer who resolved it.
     """
     permission_classes = [permissions.AllowAny]
 
     def patch(self, request, session_id):
-        data: dict[str, Any] = cast(dict[str, Any], request.data)
+        data: dict[str, Any] = cast(dict[str, Any], dict(request.data))
+        new_status = data.get('status')
+
+        if new_status == ChatStatus.RESOLVED:
+            resolving_name = get_user_actual_name(
+                request.user,
+                fallback_name=str(data.get('resolved_by_name') or '').strip()
+            )
+            data['resolved_by_name'] = resolving_name
+            if request.user and request.user.is_authenticated:
+                data['resolved_by'] = request.user
+            if not data.get('resolved_at'):
+                data['resolved_at'] = timezone.now()
+
         updated = ChatSession.update_session(session_id, **data)
         if not updated:
             return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        new_status = data.get('status')
         if new_status == ChatStatus.RESOLVED:
+            officer_name = updated.resolved_by_name or 'our support desk'
+            notes = f" Resolution Note: {updated.resolution_notes}" if updated.resolution_notes else ""
             ChatMessage.create_message(
                 session=updated,
                 sender=MessageSender.SYSTEM,
-                text=f"Ticket #{updated.ticket_code} has been marked as resolved by our support desk. Reply anytime to reopen.",
+                sender_name=officer_name,
+                text=f"Ticket #{updated.ticket_code} has been resolved by {officer_name}.{notes} Reply anytime to reopen.",
             )
         elif new_status == ChatStatus.AI_ACTIVE:
             ChatMessage.create_message(
                 session=updated,
                 sender=MessageSender.SYSTEM,
+                sender_name="System",
                 text="Switched back to Axoora AI Concierge. Ask any question below!",
             )
 

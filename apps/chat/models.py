@@ -25,6 +25,14 @@ class ChatSession(BaseModel):
     escalated_at: Any = models.DateTimeField(null=True, blank=True)
     resolved_at: Any = models.DateTimeField(null=True, blank=True)
     assigned_agent: Any = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='assigned_chats')
+    resolved_by: Any = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='resolved_chats')
+    resolved_by_name: Any = models.CharField(max_length=255, blank=True, default='')
+    resolution_notes: Any = models.TextField(blank=True, default='')
+    priority: Any = models.CharField(
+        max_length=20,
+        default='normal',
+        choices=[('low', 'Low'), ('normal', 'Normal'), ('high', 'High'), ('urgent', 'Urgent')],
+    )
     ip_address: Any = models.GenericIPAddressField(null=True, blank=True)
     user_agent: Any = models.TextField(blank=True, default='')
 
@@ -54,8 +62,8 @@ class ChatSession(BaseModel):
 
     @classmethod
     def _base_queryset(cls):
-        """Return ChatSession queryset with assigned_agent joined and messages prefetched."""
-        return cls.objects.select_related('assigned_agent').prefetch_related('messages')
+        """Return ChatSession queryset with assigned_agent and resolved_by joined and messages prefetched."""
+        return cls.objects.select_related('assigned_agent', 'resolved_by').prefetch_related('messages')
 
     @classmethod
     def get_or_create_session(cls, session_id=None, customer_name='', customer_phone='', ip_address=None, user_agent=''):
@@ -91,11 +99,17 @@ class ChatSession(BaseModel):
         return cls.get_by_id(session_id)
 
     @classmethod
-    def get_all_sessions(cls, status=None, search=None):
+    def get_all_sessions(cls, status=None, search=None, priority=None):
         """Retrieve chat sessions with optional status and search filters."""
         qs = cls._base_queryset().all()
         if status and status != 'all':
-            qs = qs.filter(status=status)
+            if status == 'tickets':
+                # Filter sessions that have been escalated or assigned
+                qs = qs.exclude(status=ChatStatus.AI_ACTIVE)
+            else:
+                qs = qs.filter(status=status)
+        if priority and priority != 'all':
+            qs = qs.filter(priority=priority)
         if search:
             clean = search.strip()
             qs = qs.filter(
@@ -103,7 +117,9 @@ class ChatSession(BaseModel):
                 Q(customer_phone__icontains=clean) |
                 Q(customer_email__icontains=clean) |
                 Q(issue_summary__icontains=clean) |
-                Q(escalation_reason__icontains=clean)
+                Q(escalation_reason__icontains=clean) |
+                Q(resolved_by_name__icontains=clean) |
+                Q(resolution_notes__icontains=clean)
             )
         return qs.order_by('-updated_at')
 
@@ -113,9 +129,22 @@ class ChatSession(BaseModel):
         session = cls.get_by_session_id(session_id)
         if not session:
             return None
-        if fields.get('status') == ChatStatus.RESOLVED and not session.resolved_at:
+        if fields.get('status') == ChatStatus.RESOLVED and not session.resolved_at and not fields.get('resolved_at'):
             fields['resolved_at'] = timezone.now()
-        allowed = ('status', 'customer_name', 'customer_phone', 'customer_email', 'issue_summary', 'escalation_reason', 'resolved_at')
+        allowed = (
+            'status',
+            'customer_name',
+            'customer_phone',
+            'customer_email',
+            'issue_summary',
+            'escalation_reason',
+            'resolved_at',
+            'resolved_by',
+            'resolved_by_name',
+            'resolution_notes',
+            'priority',
+            'assigned_agent',
+        )
         session.apply_updates(allowed, **fields)
         return session
 
@@ -144,6 +173,7 @@ class ChatMessage(BaseModel):
         choices=MessageSender.choices,
         default=MessageSender.USER,
     )
+    sender_name: Any = models.CharField(max_length=255, blank=True, default='')
     text: Any = models.TextField()
     suggested_actions: Any = models.JSONField(default=list, blank=True)
     is_escalation_trigger: Any = models.BooleanField(default=False)
@@ -159,11 +189,12 @@ class ChatMessage(BaseModel):
         return f"[{self.sender.upper()}] {self.text[:50]}"
 
     @classmethod
-    def create_message(cls, session, sender, text, suggested_actions=None, is_escalation_trigger=False):
+    def create_message(cls, session, sender, text, suggested_actions=None, is_escalation_trigger=False, sender_name=''):
         """Record a chat message in the transcript."""
         return cls.objects.create(
             session=session,
             sender=sender,
+            sender_name=sender_name,
             text=text,
             suggested_actions=suggested_actions or [],
             is_escalation_trigger=is_escalation_trigger,

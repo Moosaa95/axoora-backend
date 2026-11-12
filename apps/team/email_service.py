@@ -238,3 +238,4 @@ Axoora Security & Platform Operations
     except Exception as e:
         logger.warning(f"Failed to send password reset email to {recipient_email}: {e}")
         return False
+

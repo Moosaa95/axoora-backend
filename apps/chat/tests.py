@@ -164,3 +164,136 @@ class ChatApiTests(TestCase):
         del_res = self.client.delete(detail_url)
         self.assertEqual(del_res.status_code, status.HTTP_200_OK)
         self.assertTrue(del_res.data['success'])
+
+    def test_inactivity_warn_and_disconnect(self):
+        session = ChatSession.objects.create(customer_name='Chidi', status='human_active')
+        inactivity_url = reverse('chat-inactivity')
+
+        # 1. Warn
+        warn_res = self.client.post(
+            inactivity_url,
+            {
+                'session_id': str(session.session_id),
+                'action': 'warn',
+            },
+            format='json',
+        )
+        self.assertEqual(warn_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(warn_res.data['action'], 'warn')
+        self.assertIn('Inactivity Warning', warn_res.data['message']['text'])
+
+        # 2. Disconnect
+        disc_res = self.client.post(
+            inactivity_url,
+            {
+                'session_id': str(session.session_id),
+                'action': 'disconnect',
+            },
+            format='json',
+        )
+        self.assertEqual(disc_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(disc_res.data['action'], 'disconnect')
+        self.assertEqual(disc_res.data['status'], 'closed')
+        self.assertIn('disconnected due to customer inactivity', disc_res.data['message']['text'])
+
+        session.refresh_from_db()
+        self.assertEqual(session.status, 'closed')
+        self.assertIsNotNone(session.resolved_at)
+
+    def test_authenticated_agent_reply_locks_actual_name(self):
+        from django.contrib.auth import get_user_model
+        from apps.team.models import TeamMember, Role
+
+        User = get_user_model()
+        officer = User.objects.create_user(
+            username='adaeze_officer',
+            password='Password123!',
+            first_name='Adaeze',
+            last_name='Bello',
+            email='adaeze@axoora.com',
+        )
+        role = Role.objects.create(name='Support Specialist', slug='support-specialist', permissions=['chat:*'])
+        TeamMember.objects.create(
+            user=officer,
+            role=role,
+            job_title='Senior Support Specialist',
+            status='active',
+        )
+
+        session = ChatSession.objects.create(customer_name='Tunde', status='escalated')
+        reply_url = reverse('chat-agent-reply')
+
+        # Authenticate client as the officer
+        self.client.force_authenticate(user=officer)
+
+        # Attempt to reply while trying to spoof a different name
+        res = self.client.post(
+            reply_url,
+            {
+                'session_id': str(session.session_id),
+                'text': 'Hello Tunde, looking into your transaction reversal right now.',
+                'agent_name': 'Fake Impersonator',  # Spoof attempt must be ignored in favor of real name
+            },
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # Verify message text and sender_name reflects genuine name
+        self.assertIn('Adaeze Bello', res.data['message']['text'])
+        self.assertNotIn('Fake Impersonator', res.data['message']['text'])
+        self.assertEqual(res.data['message']['sender_name'], 'Adaeze Bello')
+
+        # Check assigned agent on session
+        session.refresh_from_db()
+        self.assertEqual(session.assigned_agent, officer)
+
+    def test_ticket_tracking_and_resolution_records_officer_and_notes(self):
+        from django.contrib.auth import get_user_model
+        from apps.team.models import TeamMember, Role
+
+        User = get_user_model()
+        officer = User.objects.create_user(
+            username='musa_resolver',
+            password='Password123!',
+            first_name='Musa',
+            last_name='Danladi',
+            email='musa@axoora.com',
+        )
+        role = Role.objects.create(name='Desk Lead', slug='desk-lead', permissions=['chat:*'])
+        TeamMember.objects.create(
+            user=officer,
+            role=role,
+            job_title='Operations Lead',
+            status='active',
+        )
+
+        session = ChatSession.objects.create(
+            customer_name='Ibrahim',
+            customer_phone='+2348039991122',
+            issue_summary='POS settlement delayed',
+            status='human_active',
+        )
+
+        detail_url = reverse('admin-chat-session-detail', kwargs={'session_id': session.session_id})
+        self.client.force_authenticate(user=officer)
+
+        resolve_res = self.client.patch(
+            detail_url,
+            {
+                'status': 'resolved',
+                'resolution_notes': 'NIP session queried. Funds returned to wallet successfully.',
+            },
+            format='json',
+        )
+        self.assertEqual(resolve_res.status_code, status.HTTP_200_OK)
+        session_data = resolve_res.data['data']
+        self.assertEqual(session_data['status'], 'resolved')
+        self.assertEqual(session_data['resolved_by_name'], 'Musa Danladi')
+        self.assertEqual(session_data['resolution_notes'], 'NIP session queried. Funds returned to wallet successfully.')
+        self.assertIsNotNone(session_data['resolved_at'])
+
+        # Verify query with tickets filter returns this resolved ticket
+        list_url = reverse('admin-chat-sessions')
+        track_res = self.client.get(f"{list_url}?status=tickets&search=Musa")
+        self.assertEqual(track_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(track_res.data['count'], 1)
+        self.assertEqual(track_res.data['results'][0]['resolved_by_name'], 'Musa Danladi')

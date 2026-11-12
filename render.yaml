@@ -1,0 +1,44 @@
+# Render Blueprint Specification for Axoora Sovereign Fintech Backend
+# Documentation: https://render.com/docs/blueprint-spec
+
+version: "1"
+
+services:
+  - type: web
+    name: axoora-backend
+    runtime: python
+    region: frankfurt
+    plan: starter
+    branch: main
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 3 --timeout 120"
+    healthCheckPath: /health/
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALLOWED_HOSTS
+        value: "localhost,127.0.0.1,.onrender.com"
+      - key: CORS_ALLOW_ALL
+        value: "false"
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://axoora-website-update.vercel.app,http://localhost:3000"
+      - key: CSRF_TRUSTED_ORIGINS
+        value: "https://*.onrender.com,https://axoora-website-update.vercel.app"
+      - key: AUTO_SEED_DATA
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: axoora-postgres
+          property: connectionString
+
+databases:
+  - name: axoora-postgres
+    plan: free
+    region: frankfurt
+    databaseName: axooradb
+    user: axoora

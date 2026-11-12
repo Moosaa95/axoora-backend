@@ -9,6 +9,7 @@ from .serializers import (
     JournalArticleSerializer,
     JournalArticleCreateUpdateSerializer,
     FaqItemSerializer,
+    FaqItemCreateUpdateSerializer,
     MerchantStorySerializer,
     ProductItemSerializer,
 )
@@ -17,7 +18,7 @@ from .serializers import (
 class ContentBootstrapView(APIView):
     """
     Unified single-request bootstrap endpoint returning hero configuration, onboarding steps,
-    merchant stories, products catalog, and journal articles in one round-trip.
+    merchant stories, products catalog, journal articles, and resolution desk FAQs in one round-trip.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -27,11 +28,13 @@ class ContentBootstrapView(APIView):
         stories = MerchantStory.get_all(featured_only=False)
         products = ProductItem.get_all()
         articles = JournalArticle.get_all(include_drafts=include_drafts)
+        faqs = FaqItem.get_active_faqs(include_inactive=include_drafts)
         return Response({
             "hero": HeroConfigurationSerializer(hero).data,
             "stories": MerchantStorySerializer(stories, many=True).data,
             "products": ProductItemSerializer(products, many=True).data,
             "articles": JournalArticleSerializer(articles, many=True).data,
+            "faqs": FaqItemSerializer(faqs, many=True).data,
         })
 
 
@@ -139,7 +142,7 @@ class JournalArticleDetailView(APIView):
 
 class FaqItemListView(APIView):
     """
-    List active resolution desk FAQs with optional category and search filters.
+    List active resolution desk FAQs with optional category and search filters, or create new FAQs.
     Uses model classmethod FaqItem.get_active_faqs().
     """
     permission_classes = [permissions.AllowAny]
@@ -147,11 +150,74 @@ class FaqItemListView(APIView):
     def get(self, request):
         category = request.query_params.get('category')
         search = request.query_params.get('search')
-        queryset = FaqItem.get_active_faqs(category=category, search=search)
+        include_inactive = request.query_params.get('include_inactive', 'false').lower() in ('true', '1')
+        queryset = FaqItem.get_active_faqs(category=category, search=search, include_inactive=include_inactive)
 
-        paginator, page = paginate_queryset(queryset, request, page_size=50)
+        paginator, page = paginate_queryset(queryset, request, page_size=100)
         serializer = FaqItemSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        serializer = FaqItemCreateUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data: dict[str, Any] = cast(dict[str, Any], serializer.validated_data)
+
+        if not data.get('question') or not data.get('answer'):
+            return Response(
+                {"error": "Question and answer are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        faq = FaqItem.create_faq(
+            question=data['question'],
+            answer=data['answer'],
+            category=data.get('category', 'General'),
+            order=data.get('order', 0),
+            is_active=data.get('is_active', True),
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message": f"FAQ '{faq.question[:40]}...' created successfully.",
+                "data": FaqItemSerializer(faq).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class FaqItemDetailView(APIView):
+    """
+    Retrieve, update or delete an FAQ item by UUID.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, faq_id):
+        faq = FaqItem.get_by_id(faq_id)
+        if not faq:
+            return Response({"error": "FAQ item not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(FaqItemSerializer(faq).data)
+
+    def patch(self, request, faq_id):
+        serializer = FaqItemCreateUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data: dict[str, Any] = cast(dict[str, Any], serializer.validated_data)
+
+        updated = FaqItem.update_faq(faq_id, **data)
+        if not updated:
+            return Response({"error": "FAQ item not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "success": True,
+            "message": "FAQ updated successfully.",
+            "data": FaqItemSerializer(updated).data,
+        })
+
+    def delete(self, request, faq_id):
+        deleted = FaqItem.delete_faq(faq_id)
+        if not deleted:
+            return Response({"error": "FAQ item not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"success": True, "message": "FAQ deleted successfully."})
 
 
 class MerchantStoryListView(APIView):

@@ -124,3 +124,40 @@ class ContentApiTests(TestCase):
         )
         self.assertEqual(patch_prod.status_code, status.HTTP_200_OK)
         self.assertEqual(patch_prod.data['data']['name'], 'Axoora Apex Pro Smart POS')
+
+    def test_faq_crud_and_bootstrap_sync(self):
+        # Verify faqs in bootstrap
+        boot_url = reverse('content-bootstrap')
+        res = self.client.get(boot_url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('faqs', res.data)
+        self.assertGreaterEqual(len(res.data['faqs']), 1)
+
+        # Create FAQ via POST
+        create_res = self.client.post(
+            reverse('faqs-list'),
+            {
+                'question': 'How do I fund my wallet?',
+                'answer': 'Transfer from any Nigerian bank to your dedicated Axoora NUBAN.',
+                'category': 'General',
+                'order': 1,
+                'is_active': True,
+            },
+            format='json',
+        )
+        self.assertEqual(create_res.status_code, status.HTTP_201_CREATED)
+        faq_id = create_res.data['data']['id']
+
+        # Update FAQ via PATCH
+        patch_res = self.client.patch(
+            reverse('faqs-detail', kwargs={'faq_id': faq_id}),
+            {'question': 'How do I fund my wallet instantly?'},
+            format='json',
+        )
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_res.data['data']['question'], 'How do I fund my wallet instantly?')
+
+        # Delete FAQ
+        del_res = self.client.delete(reverse('faqs-detail', kwargs={'faq_id': faq_id}))
+        self.assertEqual(del_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(del_res.data['success'])

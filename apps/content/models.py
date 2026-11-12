@@ -210,6 +210,8 @@ class JournalArticle(BaseModel):
     def update_article(cls, identifier, **fields):
         """Update existing article fields."""
         article = cls.get_by_id_or_slug(identifier, include_drafts=True)
+        if not article and fields.get('title'):
+            article = cls.objects.filter(title__iexact=fields['title'].strip()).first()
         if not article:
             if fields.get('title') and fields.get('summary'):
                 return cls.create_article(slug=identifier, **fields)
@@ -250,17 +252,55 @@ class FaqItem(BaseModel, ActiveModelMixin):
         return f"[{self.category}] {self.question}"
 
     @classmethod
-    def get_active_faqs(cls, category=None, search=None):
-        """Retrieve active FAQ items."""
-        qs = cls.objects.filter(is_active=True)
-        if category:
-            qs = qs.filter(category=category)
+    def get_active_faqs(cls, category=None, search=None, include_inactive=False):
+        """Retrieve active FAQ items with optional filters."""
+        qs = cls.objects.all() if include_inactive else cls.objects.filter(is_active=True)
+        if category and category.lower() != 'all':
+            qs = qs.filter(category__iexact=category.strip())
         if search:
             qs = qs.filter(
                 Q(question__icontains=search) |
                 Q(answer__icontains=search)
             )
         return qs.order_by('order', 'created_at')
+
+    @classmethod
+    def get_by_id(cls, faq_id):
+        """Retrieve single FAQ item by UUID."""
+        try:
+            return cls.objects.get(id=faq_id)
+        except (cls.DoesNotExist, ValueError, TypeError):
+            return None
+
+    @classmethod
+    def create_faq(cls, question, answer, category=FaqCategory.GENERAL, order=0, is_active=True):
+        """Create and persist a new FAQ entry."""
+        return cls.objects.create(
+            question=question.strip(),
+            answer=answer.strip(),
+            category=category,
+            order=order,
+            is_active=is_active,
+        )
+
+    @classmethod
+    def update_faq(cls, faq_id, **fields):
+        """Update existing FAQ fields."""
+        item = cls.get_by_id(faq_id)
+        if not item:
+            return None
+        allowed = ('question', 'answer', 'category', 'order', 'is_active')
+        item.apply_updates(allowed, **fields)
+        return item
+
+    @classmethod
+    def delete_faq(cls, faq_id):
+        """Delete an FAQ item."""
+        item = cls.get_by_id(faq_id)
+        if not item:
+            return False
+        item.delete()
+        return True
 
 
 class MerchantStory(BaseModel):
