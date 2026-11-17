@@ -42,3 +42,4 @@ databases:
     region: frankfurt
     databaseName: axooradb
     user: axoora
+
