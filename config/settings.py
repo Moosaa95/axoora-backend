@@ -119,15 +119,16 @@ ASGI_APPLICATION = 'config.asgi.application'
 DATABASE_URL = os.getenv('DATABASE_URL')
 if DATABASE_URL:
     try:
-        import dj_database_url
+        import importlib
+        dj_db_url = importlib.import_module('dj_database_url')
         DATABASES = {
-            'default': dj_database_url.config(
+            'default': dj_db_url.config(
                 default=DATABASE_URL,
                 conn_max_age=600,
                 conn_health_checks=True,
             )
         }
-    except ImportError:
+    except Exception:
         # Fallback URL parsing without external package
         import urllib.parse
         parsed = urllib.parse.urlparse(DATABASE_URL)
@@ -240,10 +241,13 @@ CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL', str(DEBUG)).lower() in ('tr
 
 CORS_ALLOWED_ORIGINS_ENV = os.getenv(
     'CORS_ALLOWED_ORIGINS',
-    'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,https://axoora.ai',
+    'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,https://axoora.ai,https://axoora-website-update.vercel.app',
 )
 CORS_ALLOWED_ORIGINS = [
     origin.strip() for origin in CORS_ALLOWED_ORIGINS_ENV.split(',') if origin.strip()
+]
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https:\/\/.*\.vercel\.app$",
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = [
@@ -260,7 +264,7 @@ CORS_ALLOW_HEADERS = [
 
 CSRF_TRUSTED_ORIGINS_ENV = os.getenv(
     'CSRF_TRUSTED_ORIGINS',
-    'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,http://localhost:8000,http://127.0.0.1:8000',
+    'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,http://localhost:8000,http://127.0.0.1:8000,https://axoora-website-update.vercel.app,https://axoora.ai',
 )
 CSRF_TRUSTED_ORIGINS = [
     origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()
@@ -275,6 +279,19 @@ if RENDER_EXTERNAL_HOSTNAME:
 # Trust reverse proxy SSL termination on Render / cloud production
 if not DEBUG or os.getenv('RENDER'):
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Cross-Site Cookie Configuration for Vercel Frontend <-> Render Backend
+IS_PRODUCTION_DEPLOY = not DEBUG or bool(os.getenv('RENDER'))
+if IS_PRODUCTION_DEPLOY:
+    SESSION_COOKIE_SAMESITE = 'None'
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SAMESITE = 'None'
+    CSRF_COOKIE_SECURE = True
+else:
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SAMESITE = 'Lax'
+    CSRF_COOKIE_SECURE = False
 
 # Email Configuration
 EMAIL_BACKEND = os.getenv(
